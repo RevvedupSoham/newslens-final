@@ -48,7 +48,13 @@ def upload_answer(request):
             "technical_error": str(exc),
         })
 
+    # A tiny output such as "O 1" should never be presented as a successful
+    # extraction. This is a heuristic warning, not a calibrated confidence score.
+    meaningful_characters = sum(character.isalnum() for character in extracted_text)
+    low_quality = len(extracted_text.strip()) < 20 or meaningful_characters < 8
+
     return render(request, "evaluation/review.html", {
         "extracted_text": extracted_text,
         "filename": uploaded.name,
+        "low_quality": low_quality,
     })
