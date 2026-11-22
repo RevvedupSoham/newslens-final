@@ -20,34 +20,53 @@ def load_handwriting_model():
 
 
 def segment_handwritten_lines(image):
-    """Split a handwritten page into text-line crops using a smoothed projection."""
+    """Split a handwritten page into approximate text-line crops."""
     gray = np.asarray(image.convert("L"))
     height, width = gray.shape
     ink = gray < 175
     row_ink = ink.sum(axis=1).astype(np.float32)
-    kernel = np.ones(5, dtype=np.float32) / 5
-    smoothed = np.convolve(row_ink, kernel, mode="same")
-    threshold = max(3, int(width * 0.003))
-    rows = np.flatnonzero(smoothed >= threshold)
+    smoothed = np.convolve(row_ink, np.ones(5, dtype=np.float32) / 5, mode="same")
 
+    # The previous threshold (about 3 pixels for this sample) classified nearly
+    # every row as text. Scale the threshold with image width instead.
+    threshold = max(12, int(width * 0.02))
+    rows = np.flatnonzero(smoothed >= threshold)
     if rows.size == 0:
         return [image]
 
-    max_gap = max(6, int(height * 0.012))
     groups = []
     start = previous = int(rows[0])
     for row in rows[1:]:
         row = int(row)
-        if row - previous > max_gap:
+        if row - previous > 3:
             groups.append((start, previous))
             start = row
         previous = row
     groups.append((start, previous))
 
-    padding = max(10, int(height * 0.02))
-    crops = []
+    # A tall band can contain two touching handwritten lines. Split it at a
+    # strong valley in the horizontal projection when the evidence supports it.
+    typical_height = float(np.median([bottom - top + 1 for top, bottom in groups]))
+    refined = []
     for top, bottom in groups:
-        if bottom - top < max(7, int(height * 0.012)):
+        band_height = bottom - top + 1
+        if band_height > typical_height * 1.45:
+            search_start = top + int(band_height * 0.30)
+            search_end = bottom - int(band_height * 0.30)
+            if search_end > search_start:
+                valley = search_start + int(np.argmin(smoothed[search_start:search_end + 1]))
+                left_peak = float(smoothed[top:valley].max()) if valley > top else 0
+                right_peak = float(smoothed[valley + 1:bottom + 1].max()) if bottom > valley else 0
+                reference_peak = min(left_peak, right_peak)
+                if reference_peak and smoothed[valley] < reference_peak * 0.60:
+                    refined.extend([(top, valley), (valley + 1, bottom)])
+                    continue
+        refined.append((top, bottom))
+
+    padding = max(8, int(height * 0.015))
+    crops = []
+    for top, bottom in refined:
+        if bottom - top < 7:
             continue
         y1 = max(0, top - padding)
         y2 = min(height, bottom + padding + 1)
